@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The hub: today's logic grid, a Play button, the daily streak, lifetime stats, and Pro entry
-/// points (archive + an expert grid each day).
+/// The hub: today's five-word challenge, your best time and streak, and Pro entry points
+/// (the archive of past days and unlimited practice).
 struct HomeView: View {
     @EnvironmentObject var appModel: AppModel
     @EnvironmentObject var store: Store
@@ -28,7 +28,7 @@ struct HomeView: View {
                     .padding(.bottom, 24)
                 }
             }
-            .navigationTitle("Lattice")
+            .navigationTitle("Untangle")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -40,7 +40,7 @@ struct HomeView: View {
             }
             .tint(Color.qmAccent)
             .fullScreenCover(item: $active) { spec in
-                GridView(puzzle: spec.puzzle, isExpert: spec.isExpert)
+                GameView(words: spec.words, isPractice: spec.isPractice)
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showPaywall) { PaywallView() }
@@ -63,29 +63,29 @@ struct HomeView: View {
     @ViewBuilder
     private var todayCard: some View {
         VStack(spacing: 16) {
-            Text("TODAY'S GRID")
+            Text("TODAY'S WORDS")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary).tracking(1.5)
-            if let p = appModel.today {
-                Text("\(p.rows.count) \(p.rowCategory.lowercased())s · \(p.colCategory.lowercased())s")
+            if !appModel.today.isEmpty {
+                Text("\(appModel.today.count) words to unscramble")
                     .font(.headline)
-                Text("Read the clues. Cross out what can't be, mark what must be.")
+                Text("Read the hint, rearrange the letters, beat the clock.")
                     .font(.footnote).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 if appModel.solvedToday {
                     Label("Solved today", systemImage: "checkmark.seal.fill")
                         .font(.subheadline).foregroundStyle(Color.qmCorrect)
-                    Button { play(p, expert: false) } label: {
+                    Button { play(appModel.today, practice: false) } label: {
                         Text("Play Again").frame(maxWidth: .infinity).padding(.vertical, 4)
                     }
                     .softButton()
                 } else {
-                    Button { play(p, expert: false) } label: {
-                        Text("Solve Today's Grid").frame(maxWidth: .infinity).padding(.vertical, 4)
+                    Button { play(appModel.today, practice: false) } label: {
+                        Text("Play Today's Words").frame(maxWidth: .infinity).padding(.vertical, 4)
                     }
                     .prominentButton()
                 }
             } else {
-                Text("Puzzles unavailable.").font(.subheadline).foregroundStyle(.secondary)
+                Text("Words unavailable.").font(.subheadline).foregroundStyle(.secondary)
             }
         }
         .qmCard()
@@ -95,9 +95,9 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Lifetime").font(.headline)
             HStack(spacing: 12) {
-                MetricTile(value: "\(appModel.longestStreak)", label: "Best streak")
-                MetricTile(value: "\(appModel.totalSolved)", label: "Solved")
                 MetricTile(value: appModel.bestSeconds > 0 ? timeString(appModel.bestSeconds) : "—", label: "Best time")
+                MetricTile(value: "\(appModel.totalSolved)", label: "Solved")
+                MetricTile(value: "\(appModel.longestStreak)", label: "Best streak")
             }
         }
     }
@@ -107,12 +107,10 @@ struct HomeView: View {
         VStack(spacing: 12) {
             Button {
                 Haptics.tap()
-                if store.isPro {
-                    if let p = PuzzleBank.expertToday() { play(p, expert: true) }
-                } else { showPaywall = true }
+                if store.isPro { play(Bank.practiceSet(), practice: true) } else { showPaywall = true }
             } label: {
-                proTile(icon: "brain.head.profile", title: "Expert grid",
-                        subtitle: store.isPro ? "A harder 6×6 grid, fresh daily" : "Pro", locked: !store.isPro)
+                proTile(icon: "infinity", title: "Practice",
+                        subtitle: store.isPro ? "Unlimited fresh rounds" : "Pro", locked: !store.isPro)
             }
             .buttonStyle(.plain)
 
@@ -120,8 +118,8 @@ struct HomeView: View {
                 Haptics.tap()
                 if store.isPro { showArchive = true } else { showPaywall = true }
             } label: {
-                proTile(icon: "calendar", title: "Past grids",
-                        subtitle: store.isPro ? "Replay every previous day" : "Pro", locked: !store.isPro)
+                proTile(icon: "calendar", title: "Past days",
+                        subtitle: store.isPro ? "Replay any previous day" : "Pro", locked: !store.isPro)
             }
             .buttonStyle(.plain)
         }
@@ -142,9 +140,10 @@ struct HomeView: View {
         .qmCard()
     }
 
-    private func play(_ p: Puzzle, expert: Bool) {
+    private func play(_ words: [Word], practice: Bool) {
+        guard !words.isEmpty else { return }
         Haptics.tap()
-        active = PlaySpec(puzzle: p, isExpert: expert)
+        active = PlaySpec(words: words, isPractice: practice)
     }
 
     private var dateHeadline: String {
@@ -157,9 +156,9 @@ struct HomeView: View {
     }
 }
 
-/// Identifies the puzzle being played in the full-screen cover.
+/// Identifies a run being played in the full-screen cover.
 struct PlaySpec: Identifiable {
-    let puzzle: Puzzle
-    let isExpert: Bool
-    var id: String { "\(puzzle.id)-\(isExpert)" }
+    let id = UUID()
+    let words: [Word]
+    let isPractice: Bool
 }

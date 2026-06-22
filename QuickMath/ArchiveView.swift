@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Pro: replay any previous day's grid.
+/// Pro: replay any previous day's word set.
 struct ArchiveView: View {
     @EnvironmentObject var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -15,38 +15,37 @@ struct ArchiveView: View {
                 ScrollView {
                     VStack(spacing: 10) {
                         ForEach(Array(days), id: \.self) { daysAgo in
-                            if let p = PuzzleBank.daily(daysAgo: daysAgo) {
-                                row(daysAgo: daysAgo, puzzle: p)
-                            }
+                            let words = Bank.dailySet(daysAgo: daysAgo)
+                            if !words.isEmpty { row(daysAgo: daysAgo, words: words) }
                         }
                     }
                     .padding()
                 }
             }
-            .navigationTitle("Past Grids")
+            .navigationTitle("Past Days")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() }.tint(Color.qmAccent) }
             }
             .fullScreenCover(item: $play) { spec in
-                GridView(puzzle: spec.puzzle, isExpert: false)
+                GameView(words: spec.words, isPractice: spec.isPractice)
             }
         }
     }
 
-    private func row(daysAgo: Int, puzzle: Puzzle) -> some View {
+    private func row(daysAgo: Int, words: [Word]) -> some View {
         let date = Calendar.current.date(byAdding: .day, value: -daysAgo, to: .now) ?? .now
-        let key = PuzzleBank.dateKey(for: date)
-        let solved = appModel.result(forKey: key) != nil
+        let key = Bank.dateKey(for: date)
+        let solved = appModel.solvedDaily(forKey: key)
         return Button {
-            Haptics.tap(); play = PlaySpec(puzzle: puzzle, isExpert: false)
+            Haptics.tap(); play = PlaySpec(words: words, isPractice: false)
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: solved ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(solved ? Color.qmCorrect : Color.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(dateLabel(date)).font(.headline).foregroundStyle(.primary)
-                    Text("\(puzzle.rowCategory) · \(puzzle.colCategory)").font(.caption).foregroundStyle(.secondary)
+                    Text("\(words.count) words").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)

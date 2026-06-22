@@ -2,8 +2,8 @@ import Foundation
 import SwiftData
 import SwiftUI
 
-/// App state: owns the local SwiftData store, exposes today's puzzle, and derives the streak and
-/// lifetime stats from recorded results (never stored as truth).
+/// App state: owns the local SwiftData store, exposes today's word set, and derives the streak and
+/// stats from recorded runs (never stored as truth).
 @MainActor
 final class AppModel: ObservableObject {
     let container: ModelContainer
@@ -12,18 +12,18 @@ final class AppModel: ObservableObject {
     @Published private(set) var currentStreak = 0
     @Published private(set) var longestStreak = 0
     @Published private(set) var totalSolved = 0
-    @Published private(set) var bestSeconds = 0.0   // fastest solve (lower is better)
+    @Published private(set) var bestSeconds = 0.0
     @Published private(set) var solvedToday = false
-    @Published private(set) var today: Puzzle?
+    @Published private(set) var today: [Word] = []
 
     init(container: ModelContainer) {
         self.container = container
-        today = PuzzleBank.today()
+        today = Bank.dailySet()
         refresh()
     }
 
     static func makeContainer() -> ModelContainer {
-        let schema = Schema([LatticeResult.self])
+        let schema = Schema([UntangleResult.self])
         let local = ModelConfiguration(schema: schema)
         if let c = try? ModelContainer(for: schema, configurations: local) { return c }
         let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
@@ -31,42 +31,37 @@ final class AppModel: ObservableObject {
     }
 
     func refreshTodayIfNeeded() {
-        today = PuzzleBank.today()
+        today = Bank.dailySet()
         refresh()
     }
 
-    func record(puzzle: Puzzle, solved: Bool, seconds: Double, isExpert: Bool) {
+    func record(seconds: Double, solved: Bool, isPractice: Bool) {
         let ctx = container.mainContext
-        ctx.insert(LatticeResult(dateKey: PuzzleBank.dateKey(), puzzleId: puzzle.id,
-                                 solved: solved, seconds: seconds, isExpert: isExpert))
+        ctx.insert(UntangleResult(dateKey: Bank.dateKey(), seconds: seconds, solved: solved, isPractice: isPractice))
         try? ctx.save()
         refresh()
     }
 
-    func allResults() -> [LatticeResult] {
-        let d = FetchDescriptor<LatticeResult>(sortBy: [SortDescriptor(\.date, order: .reverse)])
+    func allResults() -> [UntangleResult] {
+        let d = FetchDescriptor<UntangleResult>(sortBy: [SortDescriptor(\.date, order: .reverse)])
         return (try? container.mainContext.fetch(d)) ?? []
     }
 
-    /// The recorded daily result for a date key (ignores expert attempts).
-    func result(forKey key: String) -> LatticeResult? {
-        allResults().first { $0.dateKey == key && !$0.isExpert && $0.solved }
+    func solvedDaily(forKey key: String) -> Bool {
+        allResults().contains { $0.dateKey == key && $0.solved && !$0.isPractice }
     }
 
-    func hasSolvedToday() -> Bool { result(forKey: PuzzleBank.dateKey()) != nil }
-
     func refresh() {
-        let solvedDaily = allResults().filter { $0.solved && !$0.isExpert }
-        totalSolved = solvedDaily.count
-        bestSeconds = solvedDaily.map(\.seconds).filter { $0 > 0 }.min() ?? 0
-        solvedToday = solvedDaily.contains { $0.dateKey == PuzzleBank.dateKey() }
-        let keys = Set(solvedDaily.map(\.dateKey))
+        let daily = allResults().filter { $0.solved && !$0.isPractice }
+        totalSolved = Set(daily.map(\.dateKey)).count
+        bestSeconds = daily.map(\.seconds).filter { $0 > 0 }.min() ?? 0
+        solvedToday = daily.contains { $0.dateKey == Bank.dateKey() }
+        let keys = Set(daily.map(\.dateKey))
         let s = Self.streaks(from: keys)
         currentStreak = s.current
         longestStreak = s.longest
     }
 
-    /// Current (consecutive days ending today/yesterday) and longest run from solved-day keys.
     static func streaks(from keys: Set<String>) -> (current: Int, longest: Int) {
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"; fmt.timeZone = .current
         let cal = Calendar.current

@@ -1,64 +1,53 @@
 import SwiftUI
 
-/// The player: a one-to-one matching grid (people × an ordered attribute). Read the clues, tap
-/// cells to mark ✓ / ✗, and solve. Placing a ✓ auto-crosses the rest of its row and column.
-struct GridView: View {
-    let puzzle: Puzzle
-    var isExpert: Bool = false
+/// The player: unscramble the day's five words against the clock. Tap scrambled tiles to build the
+/// answer; the hint points to the word. Solve all five to finish your run.
+struct GameView: View {
+    let words: [Word]
+    var isPractice: Bool = false
 
     @EnvironmentObject var appModel: AppModel
     @EnvironmentObject var store: Store
     @Environment(\.dismiss) private var dismiss
 
-    @StateObject private var grid: GridState
+    @StateObject private var game: GameState
     @State private var elapsed = 0
-    @State private var solved = false
-    @State private var wrongShake = false
+    @State private var finished = false
     @State private var showResult = false
+    @State private var shake = false
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    init(puzzle: Puzzle, isExpert: Bool = false) {
-        self.puzzle = puzzle
-        self.isExpert = isExpert
-        _grid = StateObject(wrappedValue: GridState(puzzle))
+    init(words: [Word], isPractice: Bool = false) {
+        self.words = words
+        self.isPractice = isPractice
+        _game = StateObject(wrappedValue: GameState(words))
     }
-
-    private var cell: CGFloat { puzzle.size >= 6 ? 38 : 44 }
-    private let nameW: CGFloat = 74
 
     var body: some View {
         NavigationStack {
             ZStack {
                 QMBackground()
                 ScrollView {
-                    VStack(spacing: 20) {
-                        timerBar
-                        gridBlock
-                            .modifier(Shake(animatableData: wrongShake ? 1 : 0))
-                        cluesCard
-                        if store.isPro {
-                            Button { Haptics.tap(); grid.revealHint(); evaluate() } label: {
-                                Label("Reveal a hint", systemImage: "lightbulb.fill")
-                                    .frame(maxWidth: .infinity).padding(.vertical, 2)
-                            }
-                            .softButton().disabled(solved)
-                        }
+                    VStack(spacing: 22) {
+                        statusBar
+                        hintCard
+                        answerRow.modifier(Shake(animatableData: shake ? 1 : 0))
+                        poolRow
+                        controls
                     }
                     .padding()
-                    .padding(.bottom, 30)
+                    .padding(.bottom, 40)
                 }
             }
-            .navigationTitle(isExpert ? "Expert Grid" : "Today's Grid")
+            .navigationTitle(isPractice ? "Practice" : "Today's Words")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }.tint(Color.qmAccent)
-                }
+                ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() }.tint(Color.qmAccent) }
             }
-            .onReceive(timer) { _ in if !solved { elapsed += 1 } }
+            .onReceive(timer) { _ in if !finished { elapsed += 1 } }
             .sheet(isPresented: $showResult) {
-                ResultView(puzzle: puzzle, seconds: elapsed, streak: appModel.currentStreak, isExpert: isExpert) {
+                ResultView(seconds: elapsed, streak: appModel.currentStreak, isPractice: isPractice) {
                     showResult = false; dismiss()
                 }
                 .presentationDetents([.medium])
@@ -66,93 +55,114 @@ struct GridView: View {
         }
     }
 
-    private var timerBar: some View {
+    private var statusBar: some View {
         HStack {
-            Label(timeString(elapsed), systemImage: "clock").font(.subheadline.monospacedDigit())
-                .foregroundStyle(.secondary)
+            Label(timeString(elapsed), systemImage: "clock")
+                .font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
             Spacer()
-            Text("\(grid.placedCount)/\(puzzle.size) placed").font(.subheadline).foregroundStyle(.secondary)
+            Text("\(game.solvedCount)/\(words.count) solved")
+                .font(.subheadline).foregroundStyle(.secondary)
         }
     }
 
-    private var gridBlock: some View {
-        VStack(spacing: 0) {
-            // Column headers
-            HStack(spacing: 0) {
-                Text(puzzle.colCategory).font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary).frame(width: nameW, height: 46, alignment: .trailing)
-                    .padding(.trailing, 4)
-                ForEach(0..<puzzle.size, id: \.self) { c in
-                    Text(puzzle.cols[c]).font(.system(size: 10, weight: .semibold))
-                        .multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.6)
-                        .frame(width: cell, height: 46)
-                }
-            }
-            ForEach(0..<puzzle.size, id: \.self) { r in
-                HStack(spacing: 0) {
-                    Text(puzzle.rows[r]).font(.system(size: 12, weight: .medium))
-                        .lineLimit(1).minimumScaleFactor(0.6)
-                        .frame(width: nameW, height: cell, alignment: .trailing).padding(.trailing, 4)
-                    ForEach(0..<puzzle.size, id: \.self) { c in
-                        cellView(r, c)
+    private var hintCard: some View {
+        VStack(spacing: 8) {
+            Text("WORD \(min(game.index + 1, words.count)) OF \(words.count)")
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).tracking(1.5)
+            Text(game.hint)
+                .font(.title3.weight(.medium))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        .qmCard()
+    }
+
+    private var answerRow: some View {
+        HStack(spacing: 8) {
+            ForEach(0..<game.word.count, id: \.self) { i in
+                if i < game.placed.count {
+                    let id = game.placed[i]
+                    tile(letter: letter(id), filled: true, solved: game.solvedHere) {
+                        game.tapPlaced(id)
                     }
+                } else {
+                    emptySlot
                 }
             }
         }
-        .qmCard(cornerRadius: 16)
     }
 
-    private func cellView(_ r: Int, _ c: Int) -> some View {
-        Button {
-            guard !solved else { return }
-            Haptics.soft(); grid.cycle(r, c); evaluate()
-        } label: {
-            ZStack {
-                Rectangle().fill(Color.qmCard2)
-                switch grid.marks[r][c] {
-                case .yes: Image(systemName: "checkmark").font(.system(size: cell * 0.42, weight: .bold)).foregroundStyle(Color.qmAccent)
-                case .no:  Image(systemName: "xmark").font(.system(size: cell * 0.34, weight: .semibold)).foregroundStyle(Color.secondary)
-                case .blank: Color.clear
+    private var poolRow: some View {
+        HStack(spacing: 8) {
+            ForEach(game.available) { t in
+                tile(letter: String(t.ch), filled: false, solved: false) {
+                    Haptics.soft(); game.tapPool(t.id); afterTap()
                 }
             }
-            .frame(width: cell, height: cell)
-            .overlay(Rectangle().stroke(Color.qmHair, lineWidth: 0.5))
+            if game.available.isEmpty { Color.clear.frame(height: 56) }
+        }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        if !game.solvedHere {
+            Button(role: .destructive) { Haptics.tap(); game.clear() } label: {
+                Label("Clear", systemImage: "arrow.counterclockwise")
+                    .frame(maxWidth: .infinity).padding(.vertical, 2)
+            }
+            .softButton()
+        }
+    }
+
+    private func tile(letter: String, filled: Bool, solved: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(letter)
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+                .foregroundStyle(filled ? .white : Color.primary)
+                .frame(width: 44, height: 56)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(filled ? (solved ? Color.qmCorrect : Color.qmAccent) : Color.qmCard)
+                )
         }
         .buttonStyle(.plain)
     }
 
-    private var cluesCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("CLUES").font(.caption.weight(.semibold)).foregroundStyle(.secondary).tracking(1.5)
-            ForEach(Array(puzzle.clues.enumerated()), id: \.offset) { i, clue in
-                HStack(alignment: .top, spacing: 8) {
-                    Text("\(i + 1).").font(.subheadline.weight(.semibold)).foregroundStyle(Color.qmAccent)
-                    Text(clue).font(.subheadline).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .qmCard()
+    private var emptySlot: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.qmHair, style: StrokeStyle(lineWidth: 1.5, dash: [4]))
+            .frame(width: 44, height: 56)
     }
 
-    private func evaluate() {
-        guard !solved else { return }
-        if grid.isSolved {
-            solved = true
-            Haptics.success()
-            appModel.record(puzzle: puzzle, solved: true, seconds: Double(elapsed), isExpert: isExpert)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showResult = true }
-        } else if grid.isComplete {
+    private func letter(_ id: Int) -> String {
+        String(game.pool.first { $0.id == id }?.ch ?? " ")
+    }
+
+    private func afterTap() {
+        if game.isFull && game.wrong {
             Haptics.warning()
-            withAnimation(.default) { wrongShake.toggle() }
+            withAnimation(.default) { shake.toggle() }
+            return
+        }
+        if game.solvedHere {
+            Haptics.success()
+            if game.allSolved {
+                finished = true
+                appModel.record(seconds: Double(elapsed), solved: true, isPractice: isPractice)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { showResult = true }
+            } else if let n = game.nextUnsolved() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    withAnimation { game.load(n) }
+                }
+            }
         }
     }
 
     private func timeString(_ s: Int) -> String { String(format: "%d:%02d", s / 60, s % 60) }
 }
 
-/// A small horizontal shake for a completed-but-wrong grid.
+/// A small horizontal shake for a completed-but-wrong word.
 struct Shake: GeometryEffect {
     var animatableData: CGFloat
     func effectValue(size: CGSize) -> ProjectionTransform {

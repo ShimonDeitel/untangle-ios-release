@@ -1,63 +1,54 @@
 import Foundation
 import SwiftData
 
-/// One logic-grid puzzle: people (rows) matched one-to-one to an ordered attribute (cols),
-/// pinned down by a set of clues. `solution[r]` is the column index for row r.
-struct Puzzle: Codable, Identifiable, Equatable {
+/// One word to unscramble, with a hint that points to it.
+struct Word: Codable, Identifiable, Equatable {
     let id: Int
-    let size: Int
-    let rowCategory: String
-    let colCategory: String
-    let rows: [String]
-    let cols: [String]
-    let solution: [Int]
-    let clues: [String]
+    let word: String
+    let hint: String
+    let difficulty: String
 }
 
-/// The bundled puzzle bank. Daily puzzles are size 5; expert (Pro) are size 6. The puzzle for a
-/// given day is chosen deterministically from the date, so everyone gets the same one.
-enum PuzzleBank {
-    private struct Bank: Codable { let version: Int; let puzzles: [Puzzle] }
+/// The bundled word bank. Each day picks a fixed set (date-seeded, same for everyone): two easy,
+/// two medium, one hard. Pro unlocks the archive and unlimited practice.
+enum Bank {
+    static let all: [Word] = load()
+    static var easy: [Word] { all.filter { $0.difficulty == "easy" } }
+    static var medium: [Word] { all.filter { $0.difficulty == "medium" } }
+    static var hard: [Word] { all.filter { $0.difficulty == "hard" } }
 
-    static let all: [Puzzle] = load()
-    static var daily: [Puzzle] { all.filter { $0.size == 5 } }
-    static var expert: [Puzzle] { all.filter { $0.size == 6 } }
-
-    private static func load() -> [Puzzle] {
-        guard let url = Bundle.main.url(forResource: "lattice_puzzles", withExtension: "json"),
+    private static func load() -> [Word] {
+        guard let url = Bundle.main.url(forResource: "untangle_bank", withExtension: "json"),
               let data = try? Data(contentsOf: url),
-              let bank = try? JSONDecoder().decode(Bank.self, from: data) else { return [] }
-        return bank.puzzles
+              let words = try? JSONDecoder().decode([Word].self, from: data) else { return [] }
+        return words
     }
 
-    /// Days since the epoch, used as a stable per-day index.
     private static func epochDay(_ date: Date) -> Int {
         let cal = Calendar.current
-        let start = cal.startOfDay(for: date)
-        return Int((start.timeIntervalSince1970 / 86_400).rounded(.down))
+        return Int((cal.startOfDay(for: date).timeIntervalSince1970 / 86_400).rounded(.down))
     }
 
-    static func index(for date: Date, count: Int) -> Int {
-        guard count > 0 else { return 0 }
+    private static func pick(_ p: [Word], _ n: Int, _ salt: Int, _ day: Int) -> [Word] {
+        guard !p.isEmpty else { return [] }
+        let base = ((day &* 2_654_435_761 &+ salt) % p.count + p.count) % p.count
+        return (0..<min(n, p.count)).map { p[(base + $0) % p.count] }
+    }
+
+    /// The day's five words, in increasing difficulty.
+    static func dailySet(for date: Date = .now) -> [Word] {
         let d = epochDay(date)
-        return ((d % count) + count) % count
+        return pick(easy, 2, 0, d) + pick(medium, 2, 1, d) + pick(hard, 1, 2, d)
     }
 
-    static func today(for date: Date = .now) -> Puzzle? {
-        let d = daily; guard !d.isEmpty else { return nil }
-        return d[index(for: date, count: d.count)]
-    }
-
-    static func expertToday(for date: Date = .now) -> Puzzle? {
-        let e = expert; guard !e.isEmpty else { return nil }
-        return e[index(for: date, count: e.count)]
-    }
-
-    /// The daily puzzle for a day N days back (Pro archive).
-    static func daily(daysAgo: Int, from date: Date = .now) -> Puzzle? {
-        let d = daily; guard !d.isEmpty else { return nil }
+    static func dailySet(daysAgo: Int, from date: Date = .now) -> [Word] {
         let day = Calendar.current.date(byAdding: .day, value: -daysAgo, to: date) ?? date
-        return d[index(for: day, count: d.count)]
+        return dailySet(for: day)
+    }
+
+    /// A fresh random set for Pro practice.
+    static func practiceSet() -> [Word] {
+        Array(easy.shuffled().prefix(2)) + Array(medium.shuffled().prefix(2)) + Array(hard.shuffled().prefix(1))
     }
 
     static func dateKey(for date: Date = .now) -> String {
@@ -66,76 +57,90 @@ enum PuzzleBank {
     }
 }
 
-/// A single cell's mark in the grid.
-enum Mark: Int { case blank = 0, yes, no }
-
-/// Mutable state for one play session: an n×n grid of marks plus solve detection.
-final class GridState: ObservableObject {
-    let puzzle: Puzzle
-    @Published var marks: [[Mark]]
-    @Published var hintedRow: Int? = nil
-
-    init(_ p: Puzzle) {
-        puzzle = p
-        marks = Array(repeating: Array(repeating: .blank, count: p.size), count: p.size)
-    }
-
-    /// Tap cycles blank → yes → no → blank. Placing a YES auto-marks the rest of that row and
-    /// column NO (one-to-one matching), the way players naturally fill a logic grid.
-    func cycle(_ r: Int, _ c: Int) {
-        let n = puzzle.size
-        let next: Mark = marks[r][c] == .blank ? .yes : (marks[r][c] == .yes ? .no : .blank)
-        marks[r][c] = next
-        if next == .yes {
-            for cc in 0..<n where cc != c && marks[r][cc] != .no { marks[r][cc] = .no }
-            for rr in 0..<n where rr != r && marks[rr][c] != .no { marks[rr][c] = .no }
-        }
-        objectWillChange.send()
-    }
-
-    /// Reveal one correct cell the player hasn't placed yet (Pro hint).
-    func revealHint() {
-        let n = puzzle.size
-        for r in 0..<n where marks[r][puzzle.solution[r]] != .yes {
-            for c in 0..<n { marks[r][c] = (c == puzzle.solution[r]) ? .yes : .no }
-            hintedRow = r
-            objectWillChange.send()
-            return
-        }
-    }
-
-    var placedCount: Int {
-        (0..<puzzle.size).reduce(0) { acc, r in
-            acc + ((0..<puzzle.size).contains { marks[r][$0] == .yes } ? 1 : 0)
-        }
-    }
-
-    var isComplete: Bool { placedCount == puzzle.size }
-
-    var isSolved: Bool {
-        for r in 0..<puzzle.size {
-            let yes = (0..<puzzle.size).filter { marks[r][$0] == .yes }
-            if yes.count != 1 || yes[0] != puzzle.solution[r] { return false }
-        }
-        return true
-    }
+/// A scrambled letter tile with a stable identity so SwiftUI can animate it between rows.
+struct PoolTile: Identifiable, Equatable {
+    let id: Int
+    let ch: Character
 }
 
-/// One recorded attempt at a daily (or expert) grid. Local-only; defaults + no unique constraints
-/// keep it CloudKit-compatible if sync is ever added.
+/// Mutable state for one play session: the five words, the current scramble, and solve tracking.
+final class GameState: ObservableObject {
+    let words: [Word]
+    @Published var index = 0
+    @Published var pool: [PoolTile] = []
+    @Published var placed: [Int] = []          // pool-tile ids, in answer order
+    @Published var wrong = false
+    @Published var solvedFlags: [Bool]
+
+    init(_ words: [Word]) {
+        self.words = words
+        solvedFlags = Array(repeating: false, count: words.count)
+        load(0)
+    }
+
+    var word: String { words.isEmpty ? "" : words[index].word }
+    var hint: String { words.isEmpty ? "" : words[index].hint }
+
+    func load(_ i: Int) {
+        index = i
+        let target = Array(word)
+        var s = target
+        if target.count > 1 {
+            var t = 0
+            repeat { s = target.shuffled(); t += 1 } while String(s) == word && t < 10
+        }
+        pool = s.enumerated().map { PoolTile(id: $0.offset, ch: $0.element) }
+        placed = []
+        wrong = false
+    }
+
+    private func ch(_ id: Int) -> Character { pool.first { $0.id == id }?.ch ?? " " }
+    var answer: String { String(placed.map { ch($0) }) }
+    var isFull: Bool { placed.count == word.count }
+    var available: [PoolTile] { pool.filter { !placed.contains($0.id) } }
+    var solvedHere: Bool { solvedFlags.indices.contains(index) && solvedFlags[index] }
+
+    func tapPool(_ id: Int) {
+        guard !solvedHere, !placed.contains(id) else { return }
+        placed.append(id)
+        if answer == word {
+            solvedFlags[index] = true
+            wrong = false
+        } else {
+            wrong = isFull
+        }
+    }
+
+    func tapPlaced(_ id: Int) {
+        guard !solvedHere else { return }
+        placed.removeAll { $0 == id }
+        wrong = false
+    }
+
+    func clear() {
+        guard !solvedHere else { return }
+        placed = []
+        wrong = false
+    }
+
+    var solvedCount: Int { solvedFlags.filter { $0 }.count }
+    var allSolved: Bool { !solvedFlags.isEmpty && solvedFlags.allSatisfy { $0 } }
+    func nextUnsolved() -> Int? { (0..<words.count).first { !solvedFlags[$0] } }
+}
+
+/// One recorded daily run. Local-only; CloudKit-friendly defaults.
 @Model
-final class LatticeResult {
+final class UntangleResult {
     var id: UUID = UUID()
     var dateKey: String = ""
-    var puzzleId: Int = 0
-    var solved: Bool = false
     var seconds: Double = 0
-    var isExpert: Bool = false
+    var solved: Bool = false
+    var isPractice: Bool = false
     var date: Date = Date.now
 
-    init(id: UUID = UUID(), dateKey: String = "", puzzleId: Int = 0,
-         solved: Bool = false, seconds: Double = 0, isExpert: Bool = false, date: Date = .now) {
-        self.id = id; self.dateKey = dateKey; self.puzzleId = puzzleId
-        self.solved = solved; self.seconds = seconds; self.isExpert = isExpert; self.date = date
+    init(id: UUID = UUID(), dateKey: String = "", seconds: Double = 0,
+         solved: Bool = false, isPractice: Bool = false, date: Date = .now) {
+        self.id = id; self.dateKey = dateKey; self.seconds = seconds
+        self.solved = solved; self.isPractice = isPractice; self.date = date
     }
 }

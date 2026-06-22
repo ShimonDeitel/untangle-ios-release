@@ -1,17 +1,16 @@
 import SwiftUI
 
-/// Shown after a grid is solved: time, streak, and a Pro share.
+/// Shown after a run is finished: time, streak, and a Pro share.
 struct ResultView: View {
-    let puzzle: Puzzle
     let seconds: Int
     let streak: Int
-    let isExpert: Bool
+    let isPractice: Bool
     let onDone: () -> Void
 
     @EnvironmentObject var store: Store
 
     private var shareText: String {
-        "I cracked \(isExpert ? "the expert" : "today's") Lattice grid in \(timeString(seconds)) — \(streak)-day streak. One logic grid a day."
+        "I untangled \(isPractice ? "a practice round" : "today's words") in \(timeString(seconds)) — \(streak)-day streak. One anagram a day."
     }
 
     var body: some View {
@@ -20,8 +19,8 @@ struct ResultView: View {
             VStack(spacing: 18) {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 50, weight: .semibold)).foregroundStyle(Color.qmCorrect)
-                Text("Solved!").font(.largeTitle.weight(.heavy))
-                Text(isExpert ? "Expert grid cracked." : "Today's grid cracked.")
+                Text("Untangled!").font(.largeTitle.weight(.heavy))
+                Text(isPractice ? "Practice round cleared." : "Today's words cleared.")
                     .font(.subheadline).foregroundStyle(.secondary)
 
                 HStack(spacing: 12) {
